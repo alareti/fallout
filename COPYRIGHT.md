@@ -1,6 +1,6 @@
 # Licensing Information
 
-Copyright 2024 Davin Lampert <[lampdavin@gmail.com]>.
+Copyright 2024 Davin Lampert <lampdavin@gmail.com>.
 
 Copyrights in this project are retained by contributors. No copyright assignment
 is required to contribute to this project.
