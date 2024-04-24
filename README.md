@@ -26,7 +26,7 @@ dual licensed as below, without any additional terms or conditions.
 
 ## License
 
-&copy; 2024 Davin Lampert <lampdavin@gmail.com>.
+&copy; 2024 Davin Lampert [<lampdavin@gmail.com>].
 
 This project is licensed under either of
 
