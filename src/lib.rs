@@ -3,129 +3,85 @@ use std::ptr;
 #[derive(Debug, PartialEq)]
 enum Error {
     Blocked,
-    Decode,
-}
-
-#[derive(Copy, Clone, Debug)]
-struct Encoded {
-    t: u16,
 }
 
 unsafe impl Send for Sender {}
 struct Sender {
-    reg: *mut u16,
+    reg: *mut [usize; 2],
     level: bool,
 }
 
 unsafe impl Send for Receiver {}
 struct Receiver {
-    reg: *mut u16,
+    reg: *mut [usize; 2],
     level: bool,
 }
 
+// Sender will be odd parity
 impl Sender {
-    fn try_send(&mut self, enc: Encoded) -> Result<(), Error> {
+    fn try_send(&mut self, t: usize) -> Result<(), Error> {
         let perceived;
         unsafe {
             perceived = ptr::read_volatile(self.reg);
         }
 
-        if (!self.level && perceived != 0) || (self.level && perceived != u16::MAX) {
+        if (!self.level && perceived != [0, 0])
+            || (self.level && perceived != [usize::MAX, usize::MAX])
+        {
             return Err(Error::Blocked);
         }
 
-        if (!self.level && perceived == u16::MAX) || (self.level && perceived == 0) {
+        if (!self.level && perceived == [usize::MAX, usize::MAX])
+            || (self.level && perceived == [0, 0])
+        {
             panic!("Sender out of sync with Receiver");
         }
 
         unsafe {
-            ptr::write_volatile(self.reg, enc.t);
+            ptr::write_volatile(self.reg, [t, !t]);
         }
 
         self.level = !self.level;
         Ok(())
     }
-
-    fn encode(&self, t: u8) -> Encoded {
-        let mut t_encoded: u16 = 0;
-        for i in 0..8 {
-            let bit = (t >> i) & 0b1;
-            match bit {
-                0b0 => t_encoded |= 0b10 << (2 * i),
-                0b1 => t_encoded |= 0b01 << (2 * i),
-                _ => unreachable!(),
-            }
-        }
-
-        Encoded { t: t_encoded }
-    }
 }
 
 impl Receiver {
-    fn try_recv(&mut self) -> Result<u8, Error> {
+    fn try_recv(&mut self) -> Result<usize, Error> {
         let perceived;
         unsafe {
             perceived = ptr::read_volatile(self.reg);
         }
 
-        if (!self.level && perceived == u16::MAX) || (self.level && perceived == 0) {
+        if (!self.level && perceived == [usize::MAX, usize::MAX])
+            || (self.level && perceived == [0, 0])
+        {
             panic!("Receiver out of sync with Sender");
         }
 
-        match self.decode(perceived) {
-            Ok(t) => {
-                let ack = match self.level {
-                    false => u16::MAX,
-                    true => 0,
-                };
-
-                unsafe {
-                    ptr::write_volatile(self.reg, ack);
-                }
-
-                self.level = !self.level;
-                Ok(t)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn decode(&self, t_encoded: u16) -> Result<u8, Error> {
-        let mut result: u8 = 0;
-
-        for i in 0..8 {
-            let symbol = (t_encoded >> (2 * i)) & 0b11;
-            match symbol {
-                0b10 => result |= 0b0 << i,
-                0b01 => result |= 0b1 << i,
-                0b00 | 0b11 => return Err(Error::Decode),
-                _ => unreachable!(),
-            }
+        if perceived[0] ^ perceived[1] != usize::MAX {
+            return Err(Error::Blocked);
         }
 
-        Ok(result)
-    }
-}
+        let ack = match self.level {
+            false => [usize::MAX, usize::MAX],
+            true => [0, 0],
+        };
 
-fn dbg_encode(t: u8) -> Encoded {
-    let mut t_encoded: u16 = 0;
-    for i in 0..8 {
-        let bit = (t >> i) & 0b1;
-        match bit {
-            0b0 => t_encoded |= 0b10 << (2 * i),
-            0b1 => t_encoded |= 0b01 << (2 * i),
-            _ => unreachable!(),
+        unsafe {
+            ptr::write_volatile(self.reg, ack);
         }
-    }
 
-    Encoded { t: t_encoded }
+        self.level = !self.level;
+        Ok(perceived[0])
+    }
 }
 
 // channel implies a memory leak of its internal
 // boxed_reg. It's up to the user to deallocate it
 // properly.
 unsafe fn channel() -> (Sender, Receiver) {
-    let boxed_reg = Box::new(0_u16);
+    let boxed_reg = Box::new([0, 0]);
     let reg_ptr = Box::into_raw(boxed_reg);
 
     (
@@ -175,7 +131,7 @@ mod tests {
         for _ in 0..range {
             for datum in data.iter() {
                 loop {
-                    match tx.try_send(tx.encode(*datum)) {
+                    match tx.try_send(*datum) {
                         Ok(_) => break,
                         Err(_) => continue,
                     }
