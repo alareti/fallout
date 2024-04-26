@@ -218,7 +218,7 @@ mod tests {
         let data = vec![0xA5, 0xF1, 0x23, 0x00];
         let c_data = data.clone();
 
-        let range = 1_000_000;
+        let range = 2_000_000;
 
         let handle = thread::spawn(move || {
             for _ in 0..range {
