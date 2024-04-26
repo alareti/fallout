@@ -1,4 +1,4 @@
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 struct RawSender {
     reg: *mut u16,
@@ -144,14 +144,20 @@ impl RawReceiver {
     }
 }
 
-fn raw_channel(reg: &mut u16) -> (RawSender, RawReceiver) {
+fn raw_channel() -> (RawSender, RawReceiver) {
+    let boxed_reg = Box::new(0_u16);
+    let reg_ptr = Box::into_raw(boxed_reg);
+
     (
         RawSender {
-            reg,
+            reg: reg_ptr,
             blocked: false,
             level: false,
         },
-        RawReceiver { reg, level: false },
+        RawReceiver {
+            reg: reg_ptr,
+            level: false,
+        },
     )
 }
 
@@ -161,8 +167,7 @@ mod tests {
 
     #[test]
     fn raw_simple_transfer() {
-        let reg = &mut 0;
-        let (mut tx, mut rx) = raw_channel(reg);
+        let (mut tx, mut rx) = raw_channel();
 
         let msg = 0xA5;
         let msg_encoded = tx.encode(msg);
