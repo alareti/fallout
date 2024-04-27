@@ -1,49 +1,5 @@
 use std::ptr;
 
-// const ODD_PARITY_MASK: usize = {
-//     #[cfg(target_pointer_width = "16")]
-//     {
-//         0xAAAA
-//     }
-//
-//     #[cfg(target_pointer_width = "32")]
-//     {
-//         0xAAAA_AAAA
-//     }
-//
-//     #[cfg(target_pointer_width = "64")]
-//     {
-//         0xAAAA_AAAA_AAAA_AAAA
-//     }
-//
-//     #[cfg(target_pointer_width = "128")]
-//     {
-//         0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAA
-//     }
-// };
-//
-// const EVEN_PARITY_MASK: usize = {
-//     #[cfg(target_pointer_width = "16")]
-//     {
-//         0x5555
-//     }
-//
-//     #[cfg(target_pointer_width = "32")]
-//     {
-//         0x5555_5555
-//     }
-//
-//     #[cfg(target_pointer_width = "64")]
-//     {
-//         0x5555_5555_5555_5555
-//     }
-//
-//     #[cfg(target_pointer_width = "128")]
-//     {
-//         0x5555_5555_5555_5555_5555_5555_5555_5555
-//     }
-// };
-
 #[derive(Debug, PartialEq)]
 enum Error {
     Blocked,
@@ -53,7 +9,6 @@ unsafe impl Send for Sender {}
 struct Sender {
     reg: *mut [usize; 2],
     level: bool,
-    // history: vec![0, 0, 0, 0, 0],
 }
 
 unsafe impl Send for Receiver {}
@@ -77,12 +32,6 @@ impl Sender {
             ptr::write(self.reg, [t, !t]);
         }
 
-        // println!(
-        //     "Sender perceived: {:016x} {:016x}",
-        //     perceived[0], perceived[1]
-        // );
-        // println!("Sender writing: {:016x} {:016x}", t, !t);
-
         Ok(())
     }
 }
@@ -97,15 +46,6 @@ impl Receiver {
         if (perceived[0] ^ perceived[1]) != usize::MAX {
             return Err(Error::Blocked);
         }
-
-        // println!(
-        //     "Receiver perceived: {:016x} {:016x}",
-        //     perceived[0], perceived[1]
-        // );
-        // println!(
-        //     "Receiver writing: {:016x} {:016x}",
-        //     perceived[0], perceived[0]
-        // );
 
         unsafe {
             ptr::write(self.reg, [perceived[0], perceived[0]]);
@@ -187,41 +127,18 @@ mod tests {
         let c_data = data.clone();
 
         let range = 1_000_000_000;
-        // let mut rx_stuck = 0;
-        // let mut tx_stuck = 0;
-
         let handle = thread::spawn(move || {
             for _ in 0..range {
                 for (i, datum) in c_data.iter().enumerate() {
-                    // println!(
-                    //     "Receiver now handling data[{}]: {datum:016x}",
-                    //     i % c_data.len()
-                    // );
                     loop {
-                        // if rx_stuck > 1_000_000 {
-                        //     let r0;
-                        //     let r1;
-                        //     unsafe {
-                        //         r0 = ptr::read_volatile(rx.reg);
-                        //         r1 = ptr::read_volatile(rx.reg);
-                        //     }
-                        //     panic!("rx stuck on iter {i} at level {}, expected {datum:016x}\n\tR0: {:016x}  {:016x}", rx.level, r0[0], r0[1]);
-                        // }
-
-                        match rx.try_recv() {
-                            Ok(d) => {
-                                assert_eq!(
-                                    d,
-                                    *datum,
-                                    "At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
-                                    i % c_data.len(),
-                                );
-                                // rx_stuck = 0;
-                                break;
-                            }
-                            Err(_) => {
-                                // rx_stuck += 1;
-                            }
+                        if let Ok(d) = rx.try_recv() {
+                            assert_eq!(
+                                d,
+                                *datum,
+                                "At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
+                                i % c_data.len(),
+                            );
+                            break;
                         }
                     }
                 }
@@ -229,21 +146,10 @@ mod tests {
         });
 
         for _ in 0..range {
-            for (i, datum) in data.iter().enumerate() {
-                // println!("Sender now handling data[{}]: {datum:016x}", i % data.len());
+            for datum in data.iter() {
                 loop {
-                    // if tx_stuck > 1_000 {
-                    //     panic!("tx stuck on iter {i}");
-                    // }
-
-                    match tx.try_send(*datum) {
-                        Ok(_) => {
-                            // tx_stuck = 0;
-                            break;
-                        }
-                        Err(_) => {
-                            // tx_stuck += 1;
-                        }
+                    if tx.try_send(*datum).is_ok() {
+                        break;
                     }
                 }
             }

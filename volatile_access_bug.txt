@@ -1,0 +1,24 @@
+Sender now handling data[3]: ffffffffffffffff                       Receiver now handling data[3]: ffffffffffffffff
+Sender perceived: ffffffffffffffff ffffffffffffffff
+Sender writing:   ffffffffffffffff 0000000000000000                 Receiver perceived: ffffffffffffffff 0000000000000000
+                                                                    Receiver writing:   ffffffffffffffff ffffffffffffffff
+
+Sender now handling data[4]: 0000000000000000                       Receiver now handling data[4]: 0000000000000000
+Sender perceived: ffffffffffffffff ffffffffffffffff                 
+Sender writing: 0000000000000000 ffffffffffffffff                   Receiver perceived: 0000000000000000 ffffffffffffffff
+                                                                    Receiver writing: 0000000000000000 0000000000000000
+
+ Sender now handling data[5]: ffffffffffffffff                      Receiver now handling data[5]: ffffffffffffffff
+ Sender perceived: 0000000000000000 0000000000000000                
+ Sender writing: ffffffffffffffff 0000000000000000                  Receiver perceived: 0000000000000000 ffffffffffffffff
+                                                                    Receiver writing: 0000000000000000 0000000000000000  
+
+
+Sender now handling data[6]: 0000000000000000
+thread '<unnamed>' panicked at src/lib.rs:213:33:
+assertion `left == right` failed: At data[5]:
+Expected: ffffffffffffffff
+Got: 0000000000000000
+  left: 0
+ right: 18446744073709551615
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
