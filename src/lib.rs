@@ -8,13 +8,11 @@ enum Error {
 unsafe impl Send for Sender {}
 struct Sender {
     reg: *mut [usize; 2],
-    level: bool,
 }
 
 unsafe impl Send for Receiver {}
 struct Receiver {
     reg: *mut [usize; 2],
-    level: bool,
 }
 
 impl Sender {
@@ -62,16 +60,7 @@ unsafe fn channel() -> (Sender, Receiver) {
     let boxed_reg = Box::new([0, 0]);
     let reg_ptr = Box::into_raw(boxed_reg);
 
-    (
-        Sender {
-            reg: reg_ptr,
-            level: false,
-        },
-        Receiver {
-            reg: reg_ptr,
-            level: false,
-        },
-    )
+    (Sender { reg: reg_ptr }, Receiver { reg: reg_ptr })
 }
 
 #[cfg(test)]
