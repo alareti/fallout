@@ -1,5 +1,49 @@
 use std::ptr;
 
+// const ODD_PARITY_MASK: usize = {
+//     #[cfg(target_pointer_width = "16")]
+//     {
+//         0xAAAA
+//     }
+//
+//     #[cfg(target_pointer_width = "32")]
+//     {
+//         0xAAAA_AAAA
+//     }
+//
+//     #[cfg(target_pointer_width = "64")]
+//     {
+//         0xAAAA_AAAA_AAAA_AAAA
+//     }
+//
+//     #[cfg(target_pointer_width = "128")]
+//     {
+//         0xAAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAA_AAAAA
+//     }
+// };
+//
+// const EVEN_PARITY_MASK: usize = {
+//     #[cfg(target_pointer_width = "16")]
+//     {
+//         0x5555
+//     }
+//
+//     #[cfg(target_pointer_width = "32")]
+//     {
+//         0x5555_5555
+//     }
+//
+//     #[cfg(target_pointer_width = "64")]
+//     {
+//         0x5555_5555_5555_5555
+//     }
+//
+//     #[cfg(target_pointer_width = "128")]
+//     {
+//         0x5555_5555_5555_5555_5555_5555_5555_5555
+//     }
+// };
+
 #[derive(Debug, PartialEq)]
 enum Error {
     Blocked,
@@ -9,6 +53,7 @@ unsafe impl Send for Sender {}
 struct Sender {
     reg: *mut [usize; 2],
     level: bool,
+    // history: vec![0, 0, 0, 0, 0],
 }
 
 unsafe impl Send for Receiver {}
@@ -17,31 +62,27 @@ struct Receiver {
     level: bool,
 }
 
-// Sender will be odd parity
 impl Sender {
     fn try_send(&mut self, t: usize) -> Result<(), Error> {
         let perceived;
         unsafe {
-            perceived = ptr::read_volatile(self.reg);
+            perceived = ptr::read(self.reg);
         }
 
-        if (!self.level && perceived != [0, 0])
-            || (self.level && perceived != [usize::MAX, usize::MAX])
-        {
+        if (perceived[0] ^ perceived[1]) != 0 {
             return Err(Error::Blocked);
         }
 
-        if (!self.level && perceived == [usize::MAX, usize::MAX])
-            || (self.level && perceived == [0, 0])
-        {
-            panic!("Sender out of sync with Receiver");
-        }
-
         unsafe {
-            ptr::write_volatile(self.reg, [t, !t]);
+            ptr::write(self.reg, [t, !t]);
         }
 
-        self.level = !self.level;
+        // println!(
+        //     "Sender perceived: {:016x} {:016x}",
+        //     perceived[0], perceived[1]
+        // );
+        // println!("Sender writing: {:016x} {:016x}", t, !t);
+
         Ok(())
     }
 }
@@ -50,29 +91,26 @@ impl Receiver {
     fn try_recv(&mut self) -> Result<usize, Error> {
         let perceived;
         unsafe {
-            perceived = ptr::read_volatile(self.reg);
+            perceived = ptr::read(self.reg);
         }
 
-        if (!self.level && perceived == [usize::MAX, usize::MAX])
-            || (self.level && perceived == [0, 0])
-        {
-            panic!("Receiver out of sync with Sender");
-        }
-
-        if perceived[0] ^ perceived[1] != usize::MAX {
+        if (perceived[0] ^ perceived[1]) != usize::MAX {
             return Err(Error::Blocked);
         }
 
-        let ack = match self.level {
-            false => [usize::MAX, usize::MAX],
-            true => [0, 0],
-        };
+        // println!(
+        //     "Receiver perceived: {:016x} {:016x}",
+        //     perceived[0], perceived[1]
+        // );
+        // println!(
+        //     "Receiver writing: {:016x} {:016x}",
+        //     perceived[0], perceived[0]
+        // );
 
         unsafe {
-            ptr::write_volatile(self.reg, ack);
+            ptr::write(self.reg, [perceived[0], perceived[0]]);
         }
 
-        self.level = !self.level;
         Ok(perceived[0])
     }
 }
@@ -106,21 +144,83 @@ mod tests {
 
         let (mut tx, mut rx) = unsafe { channel() };
 
-        let data = vec![0xA5, 0xF1, 0x23, 0x00];
+        let data = vec![
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x0000_0000_0000_0000,
+            0xDEAD_BEEF_0BAD_B001,
+            0x0000_0000_0000_00A5,
+            0x0000_0000_0000_00F1,
+            0x0000_0000_0000_0023,
+            0x0000_0000_0000_0000,
+            0x5555_5555_5555_5555,
+            0xAAAA_AAAA_AAAA_AAAA,
+            0xAAAA_AAAA_AAAA_AAAA,
+            0x5555_5555_5555_5555,
+            0x5555_5555_5555_5555,
+            0x0000_0000_0000_00A5,
+            0x0000_0000_0000_00F1,
+            0x0000_0000_0000_0023,
+            0x0000_0000_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0x0000_0000_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0x0000_0000_0000_0000,
+        ];
         let c_data = data.clone();
 
-        let range = 1_000_000;
+        let range = 1_000_000_000;
+        // let mut rx_stuck = 0;
+        // let mut tx_stuck = 0;
+
         let handle = thread::spawn(move || {
             for _ in 0..range {
-                for datum in c_data.iter() {
+                for (i, datum) in c_data.iter().enumerate() {
+                    // println!(
+                    //     "Receiver now handling data[{}]: {datum:016x}",
+                    //     i % c_data.len()
+                    // );
                     loop {
+                        // if rx_stuck > 1_000_000 {
+                        //     let r0;
+                        //     let r1;
+                        //     unsafe {
+                        //         r0 = ptr::read_volatile(rx.reg);
+                        //         r1 = ptr::read_volatile(rx.reg);
+                        //     }
+                        //     panic!("rx stuck on iter {i} at level {}, expected {datum:016x}\n\tR0: {:016x}  {:016x}", rx.level, r0[0], r0[1]);
+                        // }
+
                         match rx.try_recv() {
                             Ok(d) => {
-                                assert_eq!(d, *datum);
+                                assert_eq!(
+                                    d,
+                                    *datum,
+                                    "At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
+                                    i % c_data.len(),
+                                );
+                                // rx_stuck = 0;
                                 break;
                             }
                             Err(_) => {
-                                continue;
+                                // rx_stuck += 1;
                             }
                         }
                     }
@@ -129,11 +229,21 @@ mod tests {
         });
 
         for _ in 0..range {
-            for datum in data.iter() {
+            for (i, datum) in data.iter().enumerate() {
+                // println!("Sender now handling data[{}]: {datum:016x}", i % data.len());
                 loop {
+                    // if tx_stuck > 1_000 {
+                    //     panic!("tx stuck on iter {i}");
+                    // }
+
                     match tx.try_send(*datum) {
-                        Ok(_) => break,
-                        Err(_) => continue,
+                        Ok(_) => {
+                            // tx_stuck = 0;
+                            break;
+                        }
+                        Err(_) => {
+                            // tx_stuck += 1;
+                        }
                     }
                 }
             }
