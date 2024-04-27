@@ -147,61 +147,58 @@ mod tests {
         handle.join().unwrap();
     }
 
-    // #[test]
-    // fn simple_transfer() {
-    //     let (mut tx, mut rx) = unsafe { channel() };
+    #[test]
+    fn simple_transfer() {
+        let (mut tx, mut rx) = unsafe { channel() };
 
-    //     let msg = 0xA5;
-    //     let msg_encoded = tx.encode(msg);
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
-    //     assert_eq!(tx.try_send(msg_encoded), Ok(()));
-    //     assert_eq!(tx.try_send(msg_encoded), Err(Error::Blocked));
-    //     assert_eq!(rx.try_recv(), Ok(msg));
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
+        let msg = 0xA5;
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+        assert_eq!(tx.try_send(msg), Ok(()));
+        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
+        assert_eq!(rx.try_recv(), Ok(msg));
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
 
-    //     let msg = 0xFF;
-    //     let msg_encoded = tx.encode(msg);
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
-    //     assert_eq!(tx.try_send(msg_encoded), Ok(()));
-    //     assert_eq!(tx.try_send(msg_encoded), Err(Error::Blocked));
-    //     assert_eq!(rx.try_recv(), Ok(msg));
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
+        let msg = 0xFF;
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+        assert_eq!(tx.try_send(msg), Ok(()));
+        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
+        assert_eq!(rx.try_recv(), Ok(msg));
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
 
-    //     let msg = 0x00;
-    //     let msg_encoded = tx.encode(msg);
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
-    //     assert_eq!(tx.try_send(msg_encoded), Ok(()));
-    //     assert_eq!(tx.try_send(msg_encoded), Err(Error::Blocked));
-    //     assert_eq!(rx.try_recv(), Ok(msg));
-    //     assert_eq!(rx.try_recv(), Err(Error::Decode));
-    // }
+        let msg = 0x00;
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+        assert_eq!(tx.try_send(msg), Ok(()));
+        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
+        assert_eq!(rx.try_recv(), Ok(msg));
+        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+    }
 
-    // #[test]
-    // fn single_thread_loop() {
-    //     let (mut tx, mut rx) = unsafe { channel() };
-    //     let data = [0xA5, 0xF1, 0x23, 0x00];
+    #[test]
+    fn single_thread_loop() {
+        let (mut tx, mut rx) = unsafe { channel() };
+        let data = [0xA5, 0xF1, 0x23, 0x00];
 
-    //     let range = 10_000_000;
+        let range = 1_000_000;
 
-    //     for _ in 0..range {
-    //         for datum in data.iter() {
-    //             loop {
-    //                 match tx.try_send(tx.encode(*datum)) {
-    //                     Ok(_) => break,
-    //                     Err(_) => continue,
-    //                 }
-    //             }
+        for _ in 0..range {
+            for datum in data.iter() {
+                loop {
+                    match tx.try_send(*datum) {
+                        Ok(_) => break,
+                        Err(_) => continue,
+                    }
+                }
 
-    //             loop {
-    //                 match rx.try_recv() {
-    //                     Ok(d) => {
-    //                         assert_eq!(d, *datum);
-    //                         break;
-    //                     }
-    //                     Err(_) => continue,
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
+                loop {
+                    match rx.try_recv() {
+                        Ok(d) => {
+                            assert_eq!(d, *datum);
+                            break;
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            }
+        }
+    }
 }
