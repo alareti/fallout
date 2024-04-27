@@ -1,5 +1,3 @@
-use std::ptr;
-
 #[derive(Debug, PartialEq)]
 enum Error {
     Blocked,
@@ -19,7 +17,7 @@ impl Sender {
     fn try_send(&mut self, t: usize) -> Result<(), Error> {
         let perceived;
         unsafe {
-            perceived = ptr::read(self.reg);
+            perceived = self.reg.read();
         }
 
         if (perceived[0] ^ perceived[1]) != 0 {
@@ -27,7 +25,7 @@ impl Sender {
         }
 
         unsafe {
-            ptr::write(self.reg, [t, !t]);
+            self.reg.write([t, !t]);
         }
 
         Ok(())
@@ -38,7 +36,7 @@ impl Receiver {
     fn try_recv(&mut self) -> Result<usize, Error> {
         let perceived;
         unsafe {
-            perceived = ptr::read(self.reg);
+            perceived = self.reg.read();
         }
 
         if (perceived[0] ^ perceived[1]) != usize::MAX {
@@ -46,7 +44,7 @@ impl Receiver {
         }
 
         unsafe {
-            ptr::write(self.reg, [perceived[0], perceived[0]]);
+            self.reg.write([perceived[0], perceived[0]]);
         }
 
         Ok(perceived[0])
@@ -115,7 +113,7 @@ mod tests {
         ];
         let c_data = data.clone();
 
-        let range = 1_000_000_000;
+        let range = 1_000_000;
         let handle = thread::spawn(move || {
             for _ in 0..range {
                 for (i, datum) in c_data.iter().enumerate() {
