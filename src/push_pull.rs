@@ -1,11 +1,8 @@
 // We only need compiler_fence for to hint at the
 // compiler not to reorder our stuff.
+// It works (for now) without this compiler hint
+// but it's here in case I want to include it later
 // use std::sync::atomic::{compiler_fence, Ordering};
-
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    Blocked,
-}
 
 #[derive(Debug, PartialEq)]
 pub enum SendErr {
@@ -19,6 +16,7 @@ pub enum RecvErr {
     MustSend,
 }
 
+unsafe impl Send for MainSocket {}
 pub struct MainSocket {
     channel: *mut [usize; 2],
     has_received: bool,
@@ -65,6 +63,7 @@ impl MainSocket {
     }
 }
 
+unsafe impl Send for SubSocket {}
 pub struct SubSocket {
     channel: *mut [usize; 2],
     has_received: bool,
@@ -111,7 +110,9 @@ impl SubSocket {
     }
 }
 
-pub fn push_pull() -> (MainSocket, SubSocket) {
+// unsafe because MainSocket and SubSocket do not
+// deallocate memory - they leak.
+pub unsafe fn push_pull() -> (MainSocket, SubSocket) {
     let boxed_reg = Box::new([0, 0]);
     let reg_ptr = Box::into_raw(boxed_reg);
 
@@ -128,201 +129,74 @@ pub fn push_pull() -> (MainSocket, SubSocket) {
     (main, sub)
 }
 
-unsafe impl Send for Sender {}
-pub struct Sender {
-    reg: *mut [usize; 2],
-}
-
-unsafe impl Send for Receiver {}
-pub struct Receiver {
-    reg: *mut [usize; 2],
-}
-
-impl Sender {
-    pub fn try_send(&mut self, t: usize) -> Result<(), Error> {
-        // Inform the compiler not to reorder things
-        // This does not emit any machine code.
-        // compiler_fence(Ordering::AcqRel);
-
-        let perceived;
-        unsafe {
-            perceived = self.reg.read();
-        }
-
-        if (perceived[0] ^ perceived[1]) != 0 {
-            return Err(Error::Blocked);
-        }
-
-        unsafe {
-            self.reg.write([t, !t]);
-        }
-
-        Ok(())
-    }
-}
-
-impl Receiver {
-    pub fn try_recv(&mut self) -> Result<usize, Error> {
-        // Inform the compiler not to reorder things
-        // This does not emit any machine code.
-        // compiler_fence(Ordering::AcqRel);
-
-        let perceived;
-        unsafe {
-            perceived = self.reg.read();
-        }
-
-        if (perceived[0] ^ perceived[1]) != usize::MAX {
-            return Err(Error::Blocked);
-        }
-
-        unsafe {
-            self.reg.write([perceived[0], perceived[0]]);
-        }
-
-        Ok(perceived[0])
-    }
-}
-
-// channel implies a memory leak of its internal
-// boxed_reg. It's up to the user to deallocate it
-// properly.
-pub unsafe fn channel() -> (Sender, Receiver) {
-    let boxed_reg = Box::new([0, 0]);
-    let reg_ptr = Box::into_raw(boxed_reg);
-
-    (Sender { reg: reg_ptr }, Receiver { reg: reg_ptr })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn thread_transfer() {
-        use std::thread;
-
-        let (mut tx, mut rx) = unsafe { channel() };
-
-        let data = vec![
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0000,
-            0x0000_0000_0000_0001,
-            0x0000_0000_0000_0000,
-            0xDEAD_BEEF_0BAD_B001,
-            0x0000_0000_0000_00A5,
-            0x0000_0000_0000_00F1,
-            0x0000_0000_0000_0023,
-            0x0000_0000_0000_0000,
-            0x5555_5555_5555_5555,
-            0xAAAA_AAAA_AAAA_AAAA,
-            0xAAAA_AAAA_AAAA_AAAA,
-            0x5555_5555_5555_5555,
-            0x5555_5555_5555_5555,
-            0x0000_0000_0000_00A5,
-            0x0000_0000_0000_00F1,
-            0x0000_0000_0000_0023,
-            0x0000_0000_0000_0000,
-            0xFFFF_FFFF_FFFF_FFFF,
-            0xFFFF_FFFF_FFFF_FFFF,
-            0xFFFF_FFFF_FFFF_FFFF,
-            0xFFFF_FFFF_FFFF_FFFF,
-            0x0000_0000_0000_0000,
-            0xFFFF_FFFF_FFFF_FFFF,
-            0x0000_0000_0000_0000,
-        ];
-        let c_data = data.clone();
-
-        // Keep this low for now
-        let range = 1_000;
-        let handle = thread::spawn(move || {
-            for _ in 0..range {
-                for (i, datum) in c_data.iter().enumerate() {
-                    loop {
-                        if let Ok(d) = rx.try_recv() {
-                            assert_eq!(
-                                d,
-                                *datum,
-                                "At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
-                                i % c_data.len(),
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        for _ in 0..range {
-            for datum in data.iter() {
-                loop {
-                    if tx.try_send(*datum).is_ok() {
-                        break;
-                    }
-                }
-            }
-        }
-
-        handle.join().unwrap();
-    }
-
-    #[test]
     fn simple_transfer() {
-        let (mut tx, mut rx) = unsafe { channel() };
+        let (mut main, mut sub) = unsafe { push_pull() };
 
         let msg = 0xA5;
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
-        assert_eq!(tx.try_send(msg), Ok(()));
-        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
-        assert_eq!(rx.try_recv(), Ok(msg));
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+        assert_eq!(sub.try_recv(), Err(RecvErr::Blocked));
+        assert_eq!(main.try_send(msg), Ok(()));
+        assert_eq!(main.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(main.try_recv(), Err(RecvErr::Blocked));
+        assert_eq!(sub.try_recv(), Ok(msg));
+        assert_eq!(sub.try_recv(), Err(RecvErr::MustSend));
+        assert_eq!(sub.try_send(msg), Ok(()));
+        assert_eq!(sub.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(sub.try_recv(), Err(RecvErr::Blocked));
+        assert_eq!(main.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(main.try_recv(), Ok(msg));
 
         let msg = 0xFF;
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
-        assert_eq!(tx.try_send(msg), Ok(()));
-        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
-        assert_eq!(rx.try_recv(), Ok(msg));
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
-
-        let msg = 0x00;
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
-        assert_eq!(tx.try_send(msg), Ok(()));
-        assert_eq!(tx.try_send(msg), Err(Error::Blocked));
-        assert_eq!(rx.try_recv(), Ok(msg));
-        assert_eq!(rx.try_recv(), Err(Error::Blocked));
+        assert_eq!(main.try_send(msg), Ok(()));
+        assert_eq!(main.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(main.try_recv(), Err(RecvErr::Blocked));
+        assert_eq!(sub.try_recv(), Ok(msg));
+        assert_eq!(sub.try_recv(), Err(RecvErr::MustSend));
+        assert_eq!(sub.try_send(msg), Ok(()));
+        assert_eq!(sub.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(sub.try_recv(), Err(RecvErr::Blocked));
+        assert_eq!(main.try_send(msg), Err(SendErr::MustRecv(msg)));
+        assert_eq!(main.try_recv(), Ok(msg));
     }
 
     #[test]
     fn single_thread_loop() {
-        let (mut tx, mut rx) = unsafe { channel() };
+        let (mut main, mut sub) = unsafe { push_pull() };
         let data = [0xA5, 0xF1, 0x23, 0x00];
 
         let range = 1_000_000;
-
         for _ in 0..range {
             for datum in data.iter() {
                 loop {
-                    match tx.try_send(*datum) {
+                    match main.try_send(*datum) {
                         Ok(_) => break,
                         Err(_) => continue,
                     }
                 }
 
                 loop {
-                    match rx.try_recv() {
+                    match sub.try_recv() {
+                        Ok(d) => {
+                            assert_eq!(d, *datum);
+                            break;
+                        }
+                        Err(_) => continue,
+                    }
+                }
+
+                loop {
+                    match sub.try_send(*datum) {
+                        Ok(_) => break,
+                        Err(_) => continue,
+                    }
+                }
+
+                loop {
+                    match main.try_recv() {
                         Ok(d) => {
                             assert_eq!(d, *datum);
                             break;
@@ -332,5 +206,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn thread_transfer() {
+        use std::thread;
+
+        let (mut main, mut sub) = unsafe { push_pull() };
+
+        let data = vec![
+            0x0000_0000_DEAD_BEEF,
+            0xDEAD_BEEF_0000_0000,
+            0x0000_0000_0000_0000,
+            0xDEAD_BEEF_DEAD_BEEF,
+        ];
+        let c_data = data.clone();
+
+        // Keep this low for now
+        let range = 100_000_000;
+        let handle = thread::spawn(move || {
+            for _ in 0..range {
+                for (i, datum) in c_data.iter().enumerate() {
+                    loop {
+                        if let Ok(d) = sub.try_recv() {
+                            assert_eq!(
+                                d,
+                                *datum,
+                                "Sub: At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
+                                i % c_data.len(),
+                            );
+                            break;
+                        }
+                    }
+                    if sub.try_send(*datum).is_err() {
+                        panic!("Sub couldn't send datum");
+                    }
+                }
+            }
+        });
+
+        for i in 0..range {
+            for datum in data.iter() {
+                if main.try_send(*datum).is_err() {
+                    panic!("Main couldn't send datum");
+                }
+                loop {
+                    if let Ok(d) = main.try_recv() {
+                        assert_eq!(
+                            d,
+                            *datum,
+                            "Main: At data[{}]:\nExpected: {datum:016x}\nGot: {d:016x}",
+                            i % data.len(),
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        handle.join().unwrap();
     }
 }
