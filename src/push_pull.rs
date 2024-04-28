@@ -1,25 +1,148 @@
-use std::sync::atomic::{compiler_fence, Ordering};
+// We only need compiler_fence for to hint at the
+// compiler not to reorder our stuff.
+// use std::sync::atomic::{compiler_fence, Ordering};
 
 #[derive(Debug, PartialEq)]
-enum Error {
+pub enum Error {
     Blocked,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum SendErr {
+    NoAck(usize),
+    MustRecv(usize),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum RecvErr {
+    Blocked,
+    MustSend,
+}
+
+pub struct MainSocket {
+    channel: *mut [usize; 2],
+    has_received: bool,
+}
+
+impl MainSocket {
+    pub fn try_send(&mut self, t: usize) -> Result<(), SendErr> {
+        // We must receive before we can send
+        if !self.has_received {
+            return Err(SendErr::MustRecv(t));
+        }
+
+        // Write data with odd parity
+        unsafe {
+            self.channel.write([t, !t]);
+        }
+
+        // We must now receive before we
+        // can write again
+        self.has_received = false;
+        Ok(())
+    }
+
+    pub fn try_recv(&mut self) -> Result<usize, RecvErr> {
+        // We must send before we can receive
+        if self.has_received {
+            return Err(RecvErr::MustSend);
+        }
+
+        let perceived;
+        unsafe {
+            perceived = self.channel.read();
+        }
+
+        // Ensure even parity.
+        // Otherwise sender's transmission has not
+        // yet propagated to us.
+        if (perceived[0] ^ perceived[1]) != 0 {
+            return Err(RecvErr::Blocked);
+        }
+
+        self.has_received = true;
+        Ok(perceived[0])
+    }
+}
+
+pub struct SubSocket {
+    channel: *mut [usize; 2],
+    has_received: bool,
+}
+
+impl SubSocket {
+    pub fn try_send(&mut self, t: usize) -> Result<(), SendErr> {
+        // We must receive before we can send
+        if !self.has_received {
+            return Err(SendErr::MustRecv(t));
+        }
+
+        // Write data with even parity
+        unsafe {
+            self.channel.write([t, t]);
+        }
+
+        // We must now receive before we
+        // can write again
+        self.has_received = false;
+        Ok(())
+    }
+
+    pub fn try_recv(&mut self) -> Result<usize, RecvErr> {
+        // We must send before we can receive
+        if self.has_received {
+            return Err(RecvErr::MustSend);
+        }
+
+        let perceived;
+        unsafe {
+            perceived = self.channel.read();
+        }
+
+        // Ensure odd parity.
+        // Otherwise sender's transmission has not
+        // yet propagated to us yet.
+        if (perceived[0] ^ perceived[1]) != usize::MAX {
+            return Err(RecvErr::Blocked);
+        }
+
+        self.has_received = true;
+        Ok(perceived[0])
+    }
+}
+
+pub fn push_pull() -> (MainSocket, SubSocket) {
+    let boxed_reg = Box::new([0, 0]);
+    let reg_ptr = Box::into_raw(boxed_reg);
+
+    let main = MainSocket {
+        channel: reg_ptr,
+        has_received: true,
+    };
+
+    let sub = SubSocket {
+        channel: reg_ptr,
+        has_received: false,
+    };
+
+    (main, sub)
+}
+
 unsafe impl Send for Sender {}
-struct Sender {
+pub struct Sender {
     reg: *mut [usize; 2],
 }
 
 unsafe impl Send for Receiver {}
-struct Receiver {
+pub struct Receiver {
     reg: *mut [usize; 2],
 }
 
 impl Sender {
-    fn try_send(&mut self, t: usize) -> Result<(), Error> {
+    pub fn try_send(&mut self, t: usize) -> Result<(), Error> {
         // Inform the compiler not to reorder things
         // This does not emit any machine code.
-        compiler_fence(Ordering::AcqRel);
+        // compiler_fence(Ordering::AcqRel);
 
         let perceived;
         unsafe {
@@ -39,10 +162,10 @@ impl Sender {
 }
 
 impl Receiver {
-    fn try_recv(&mut self) -> Result<usize, Error> {
+    pub fn try_recv(&mut self) -> Result<usize, Error> {
         // Inform the compiler not to reorder things
         // This does not emit any machine code.
-        compiler_fence(Ordering::AcqRel);
+        // compiler_fence(Ordering::AcqRel);
 
         let perceived;
         unsafe {
@@ -64,7 +187,7 @@ impl Receiver {
 // channel implies a memory leak of its internal
 // boxed_reg. It's up to the user to deallocate it
 // properly.
-unsafe fn channel() -> (Sender, Receiver) {
+pub unsafe fn channel() -> (Sender, Receiver) {
     let boxed_reg = Box::new([0, 0]);
     let reg_ptr = Box::into_raw(boxed_reg);
 
