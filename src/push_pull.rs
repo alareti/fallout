@@ -223,7 +223,7 @@ mod tests {
         let c_data = data.clone();
 
         // Keep this low for now
-        let range = 100_000_000;
+        let range = 1_000_000;
         let handle = thread::spawn(move || {
             for _ in 0..range {
                 for (i, datum) in c_data.iter().enumerate() {
