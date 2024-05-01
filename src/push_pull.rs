@@ -4,10 +4,73 @@
 // but it's here in case I want to include it later
 // use std::sync::atomic::{compiler_fence, Ordering};
 
+use std::marker::PhantomData;
+use std::mem::{align_of, align_of_val, size_of, ManuallyDrop};
+use std::{alloc, ptr};
+
+// unsafe because MainSocket and SubSocket do not
+// deallocate memory - they leak.
+pub unsafe fn channel<T: Sized>() -> Result<(MainSocket<T>, SubSocket<T>), alloc::LayoutError> {
+    let t_size_bytes = size_of::<T>();
+    let usize_count = (t_size_bytes + size_of::<usize>() - 1) / size_of::<usize>();
+    let total_size_bytes = usize_count * size_of::<usize>();
+
+    let layout = match alloc::Layout::from_size_align(2 * total_size_bytes, align_of::<usize>()) {
+        Ok(layout) => layout,
+        Err(e) => {
+            return Err(e);
+        }
+    };
+
+    let channel = alloc::alloc(layout) as *mut usize;
+    if channel.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+
+    let parity = channel.add(usize_count);
+    if parity.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+
+    assert_eq!(
+        channel as usize % align_of::<usize>(),
+        0,
+        "Channel is not aligned"
+    );
+    assert_eq!(
+        parity as usize % align_of::<usize>(),
+        0,
+        "Parity is not aligned"
+    );
+
+    println!(
+        "Channel address: {:p}, Parity address: {:p}",
+        channel, parity
+    );
+
+    let main = MainSocket::<T> {
+        channel,
+        parity,
+        can_send: true,
+        usize_count,
+        _marker: PhantomData,
+    };
+
+    let sub = SubSocket::<T> {
+        channel,
+        parity,
+        can_send: false,
+        usize_count,
+        _marker: PhantomData,
+    };
+
+    Ok((main, sub))
+}
+
 #[derive(Debug, PartialEq)]
-pub enum SendErr {
-    NoAck(usize),
-    MustRecv(usize),
+pub enum SendErr<T> {
+    NoAck(T),
+    MustRecv(T),
 }
 
 #[derive(Debug, PartialEq)]
@@ -16,117 +79,130 @@ pub enum RecvErr {
     MustSend,
 }
 
-unsafe impl Send for MainSocket {}
-pub struct MainSocket {
-    channel: *mut [usize; 2],
-    has_received: bool,
+unsafe impl<T> Send for MainSocket<T> {}
+pub struct MainSocket<T: Sized> {
+    channel: *mut usize,
+    parity: *mut usize,
+    can_send: bool,
+    usize_count: usize,
+    _marker: PhantomData<T>,
 }
 
-impl MainSocket {
-    pub fn try_send(&mut self, t: usize) -> Result<(), SendErr> {
+impl<T> MainSocket<T> {
+    pub fn try_send(&mut self, t: T) -> Result<(), SendErr<T>> {
         // We must receive before we can send
-        if !self.has_received {
+        if !self.can_send {
             return Err(SendErr::MustRecv(t));
         }
 
-        // Write data with odd parity
-        unsafe {
-            self.channel.write([t, !t]);
+        // Ensure t is not dropped at end of function
+        let t = ManuallyDrop::new(t);
+        let t_ptr: *const ManuallyDrop<T> = &t;
+        let t_ptr = t_ptr as *const usize;
+
+        // Write t along with odd parity
+        for i in 0..self.usize_count {
+            unsafe {
+                ptr::write(self.channel.add(i), *t_ptr.add(i));
+                ptr::write(self.parity.add(i), !(*t_ptr.add(i)));
+            }
         }
 
         // We must now receive before we
-        // can write again
-        self.has_received = false;
+        // can send again
+        self.can_send = false;
         Ok(())
     }
 
-    pub fn try_recv(&mut self) -> Result<usize, RecvErr> {
+    pub fn try_recv(&mut self) -> Result<T, RecvErr> {
         // We must send before we can receive
-        if self.has_received {
+        if self.can_send {
             return Err(RecvErr::MustSend);
         }
 
-        let perceived;
+        // Ensure even parity
+        for i in 0..self.usize_count {
+            unsafe {
+                let u = ptr::read(self.channel.add(i));
+                if u != ptr::read(self.parity.add(i)) {
+                    return Err(RecvErr::Blocked);
+                }
+            }
+        }
+
+        let t;
         unsafe {
-            perceived = self.channel.read();
+            t = ptr::read(self.channel as *const ManuallyDrop<T>);
         }
 
-        // Ensure even parity.
-        // Otherwise sender's transmission has not
-        // yet propagated to us.
-        if (perceived[0] ^ perceived[1]) != 0 {
-            return Err(RecvErr::Blocked);
-        }
-
-        self.has_received = true;
-        Ok(perceived[0])
+        // We take ownership of t and allow it to be dropped
+        // again. We also must send before we can receive again
+        self.can_send = true;
+        Ok(ManuallyDrop::into_inner(t))
     }
 }
 
-unsafe impl Send for SubSocket {}
-pub struct SubSocket {
-    channel: *mut [usize; 2],
-    has_received: bool,
+unsafe impl<T> Send for SubSocket<T> {}
+pub struct SubSocket<T> {
+    channel: *mut usize,
+    parity: *mut usize,
+    can_send: bool,
+    usize_count: usize,
+    _marker: PhantomData<T>,
 }
 
-impl SubSocket {
-    pub fn try_send(&mut self, t: usize) -> Result<(), SendErr> {
+impl<T> SubSocket<T> {
+    pub fn try_send(&mut self, t: T) -> Result<(), SendErr<T>> {
         // We must receive before we can send
-        if !self.has_received {
+        if !self.can_send {
             return Err(SendErr::MustRecv(t));
         }
 
-        // Write data with even parity
-        unsafe {
-            self.channel.write([t, t]);
+        // Ensure t is not dropped at end of function
+        let t = ManuallyDrop::new(t);
+        let t_ptr: *const ManuallyDrop<T> = &t;
+        let t_ptr = t_ptr as *const usize;
+
+        // Write t along with even parity
+        for i in 0..self.usize_count {
+            unsafe {
+                ptr::write(self.channel.add(i), *t_ptr.add(i));
+                ptr::write(self.parity.add(i), *t_ptr.add(i));
+            }
         }
 
         // We must now receive before we
-        // can write again
-        self.has_received = false;
+        // can send again
+        self.can_send = false;
         Ok(())
     }
 
-    pub fn try_recv(&mut self) -> Result<usize, RecvErr> {
+    pub fn try_recv(&mut self) -> Result<T, RecvErr> {
         // We must send before we can receive
-        if self.has_received {
+        if self.can_send {
             return Err(RecvErr::MustSend);
         }
 
-        let perceived;
+        // Ensure odd parity
+        for i in 0..self.usize_count {
+            unsafe {
+                let u = ptr::read(self.channel.add(i));
+                if u != !ptr::read(self.parity.add(i)) {
+                    return Err(RecvErr::Blocked);
+                }
+            }
+        }
+
+        let t;
         unsafe {
-            perceived = self.channel.read();
+            t = ptr::read(self.channel as *const ManuallyDrop<T>);
         }
 
-        // Ensure odd parity.
-        // Otherwise sender's transmission has not
-        // yet propagated to us yet.
-        if (perceived[0] ^ perceived[1]) != usize::MAX {
-            return Err(RecvErr::Blocked);
-        }
-
-        self.has_received = true;
-        Ok(perceived[0])
+        // We take ownership of t and allow it to be dropped
+        // again. We also must send before we can receive again
+        self.can_send = true;
+        Ok(ManuallyDrop::into_inner(t))
     }
-}
-
-// unsafe because MainSocket and SubSocket do not
-// deallocate memory - they leak.
-pub unsafe fn push_pull() -> (MainSocket, SubSocket) {
-    let boxed_reg = Box::new([0, 0]);
-    let reg_ptr = Box::into_raw(boxed_reg);
-
-    let main = MainSocket {
-        channel: reg_ptr,
-        has_received: true,
-    };
-
-    let sub = SubSocket {
-        channel: reg_ptr,
-        has_received: false,
-    };
-
-    (main, sub)
 }
 
 #[cfg(test)]
@@ -134,8 +210,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn non_scalar() {
+        let msg = String::from("Hello, World!");
+
+        let (mut main, mut sub) = unsafe { channel::<String>().unwrap() };
+
+        assert_eq!(main.try_send(msg), Ok(()));
+        let msg = sub.try_recv().unwrap();
+        assert_eq!(msg, "Hello, World!");
+    }
+
+    #[test]
     fn simple_transfer() {
-        let (mut main, mut sub) = unsafe { push_pull() };
+        let (mut main, mut sub) = unsafe { channel::<usize>().unwrap() };
 
         let msg = 0xA5;
         assert_eq!(sub.try_recv(), Err(RecvErr::Blocked));
@@ -165,7 +252,7 @@ mod tests {
 
     #[test]
     fn single_thread_loop() {
-        let (mut main, mut sub) = unsafe { push_pull() };
+        let (mut main, mut sub) = unsafe { channel::<usize>().unwrap() };
         let data = [0xA5, 0xF1, 0x23, 0x00];
 
         let range = 1_000_000;
@@ -212,7 +299,7 @@ mod tests {
     fn thread_transfer() {
         use std::thread;
 
-        let (mut main, mut sub) = unsafe { push_pull() };
+        let (mut main, mut sub) = unsafe { channel::<usize>().unwrap() };
 
         let data = vec![
             0x0000_0000_DEAD_BEEF,
