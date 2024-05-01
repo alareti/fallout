@@ -9,7 +9,7 @@ use std::mem::{align_of, align_of_val, size_of, ManuallyDrop};
 use std::{alloc, ptr};
 
 // unsafe because MainSocket and SubSocket do not
-// deallocate memory - they leak.
+// deallocate memory - they leak the channel common between them
 pub unsafe fn channel<T: Sized>() -> Result<(MainSocket<T>, SubSocket<T>), alloc::LayoutError> {
     let t_size_bytes = size_of::<T>();
     let usize_count = (t_size_bytes + size_of::<usize>() - 1) / size_of::<usize>();
@@ -211,13 +211,12 @@ mod tests {
 
     #[test]
     fn non_scalar() {
-        let msg = String::from("Hello, World!");
-
         let (mut main, mut sub) = unsafe { channel::<String>().unwrap() };
 
-        assert_eq!(main.try_send(msg), Ok(()));
-        let msg = sub.try_recv().unwrap();
-        assert_eq!(msg, "Hello, World!");
+        assert_eq!(main.try_send(String::from("Hello, World!")), Ok(()));
+        assert_eq!(sub.try_recv().unwrap(), "Hello, World!");
+        assert_eq!(sub.try_send(String::from("Right back at you!")), Ok(()));
+        assert_eq!(main.try_recv().unwrap(), "Right back at you!");
     }
 
     #[test]
