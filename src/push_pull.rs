@@ -2,14 +2,15 @@
 // compiler not to reorder our stuff.
 // It works (for now) without this compiler hint
 // but it's here in case I want to include it later
-// use std::sync::atomic::{compiler_fence, Ordering};
+use std::sync::atomic::{compiler_fence, Ordering};
 
+use std::hint;
 use std::marker::PhantomData;
 use std::mem::{align_of, align_of_val, size_of, ManuallyDrop};
 use std::{alloc, ptr};
 
 // unsafe because MainSocket and SubSocket do not
-// deallocate memory - they leak the channel common between them
+// deallocate memory - they leak
 pub unsafe fn channel<T: Sized>() -> Result<(MainSocket<T>, SubSocket<T>), alloc::LayoutError> {
     let t_size_bytes = size_of::<T>();
     let usize_count = (t_size_bytes + size_of::<usize>() - 1) / size_of::<usize>();
@@ -90,6 +91,8 @@ pub struct MainSocket<T: Sized> {
 
 impl<T> MainSocket<T> {
     pub fn try_send(&mut self, t: T) -> Result<(), SendErr<T>> {
+        compiler_fence(Ordering::SeqCst);
+
         // We must receive before we can send
         if !self.can_send {
             return Err(SendErr::MustRecv(t));
@@ -115,6 +118,8 @@ impl<T> MainSocket<T> {
     }
 
     pub fn try_recv(&mut self) -> Result<T, RecvErr> {
+        compiler_fence(Ordering::SeqCst);
+
         // We must send before we can receive
         if self.can_send {
             return Err(RecvErr::MustSend);
@@ -153,6 +158,8 @@ pub struct SubSocket<T> {
 
 impl<T> SubSocket<T> {
     pub fn try_send(&mut self, t: T) -> Result<(), SendErr<T>> {
+        compiler_fence(Ordering::SeqCst);
+
         // We must receive before we can send
         if !self.can_send {
             return Err(SendErr::MustRecv(t));
@@ -178,6 +185,8 @@ impl<T> SubSocket<T> {
     }
 
     pub fn try_recv(&mut self) -> Result<T, RecvErr> {
+        compiler_fence(Ordering::SeqCst);
+
         // We must send before we can receive
         if self.can_send {
             return Err(RecvErr::MustSend);
